@@ -1,4 +1,4 @@
-import select, serial, threading
+import select, serial, threading, sys
 
 # Byte codes
 CONNECT              = '\xc0'
@@ -10,18 +10,26 @@ POOR_SIGNAL          = '\x02'
 ATTENTION            = '\x04'
 MEDITATION           = '\x05'
 BLINK                = '\x16'
+
+
 HEADSET_CONNECTED    = '\xd0'
 HEADSET_NOT_FOUND    = '\xd1'
 HEADSET_DISCONNECTED = '\xd2'
 REQUEST_DENIED       = '\xd3'
 STANDBY_SCAN         = '\xd4'
 RAW_VALUE            = '\x80'
+WAVES                = '\x83'
 
 # Status codes
 STATUS_CONNECTED     = 'connected'
 STATUS_SCANNING      = 'scanning'
 STATUS_STANDBY       = 'standby'
 
+
+def bigend_24b(b1, b2, b3):
+    return b1* 255 * 255 + 255 * b2 + b3
+    
+    
 class Headset(object):
     """
     A MindWave Headset
@@ -63,13 +71,16 @@ class Headset(object):
                         payload = s.read(plength)
 
                         # Verify its checksum
-                        val = sum(ord(b) for b in payload[:-1])
-                        val &= 0xff
+                        #val = sum(ord(b) for b in payload[:-1])
+                        val = sum(ord(b) for b in payload)
+
+                        #val &= 0xff
+
                         val = ~val & 0xff
                         chksum = ord(s.read())
 
-                        #if val == chksum:
-                        if True: # ignore bad checksums
+                        if val == chksum:
+                        #if True: # ignore bad checksums
                             self.parse_payload(payload)
                 except (select.error, OSError):
                     break
@@ -116,6 +127,7 @@ class Headset(object):
                                     handler(self.headset,
                                             self.headset.poor_signal)
                     elif code == ATTENTION:
+                        #print "ATTENTION"
                         # Attention level
                         self.headset.attention = ord(value)
                         for handler in self.headset.attention_handlers:
@@ -127,6 +139,7 @@ class Headset(object):
                             handler(self.headset, self.headset.meditation)
                     elif code == BLINK:
                         # Blink strength
+                        print "BLINK CHANGE"
                         self.headset.blink = ord(value)
                         for handler in self.headset.blink_handlers:
                             handler(self.headset, self.headset.blink)
@@ -140,12 +153,26 @@ class Headset(object):
                     # Multi-byte EEG and Raw Wave codes not included
                     # Raw Value added due to Mindset Communications Protocol
                     if code == RAW_VALUE:
-                        raw=ord(value[0])*256+ord(value[1])
-                        if (raw>=32768):
-                            raw=raw-65536
-                        self.headset.raw_value = raw
-                        for handler in self.headset.raw_value_handlers:
-                            handler(self.headset, self.headset.raw_value)
+                        try:
+                            raw=ord(value[0])*256+ord(value[1])
+                            if (raw>=32768):
+                                raw=raw-65536
+                            self.headset.raw_value = raw
+                            for handler in self.headset.raw_value_handlers:
+                                handler(self.headset, self.headset.raw_value)
+                        except:
+                            #print "HMM"
+                            pass
+                    if code == WAVES:
+                        self.headset.waves = {}
+                        value = list(value)
+                        for i in range(8):
+                            key = self.headset.waves_order[i]
+                            self.headset.waves[key] = bigend_24b(ord(value.pop(0)), ord(value.pop(0)), ord(value.pop(0)))
+                            #self.current_vector.append(bigend_24b(ord(value.pop(0)), ord(value.pop(0)), ord(value.pop(0))))
+                        for handler in self.headset.waves_handlers:
+                            handler(self.headset, self.headset.waves)
+
                     if code == HEADSET_CONNECTED:
                         # Headset connect success
                         run_handlers = self.headset.status != STATUS_CONNECTED
@@ -210,6 +237,13 @@ class Headset(object):
         self.meditation = 0
         self.blink = 0
         self.raw_value = 0
+        # delta, theta, low-alpha, high-alpha, low-beta, high-beta,
+        # low-gamma, high-gamma
+
+        self.waves = {'delta': 0, 'theta': 0,'low-alpha': 0,'high-alpha': 0,'low-beta': 0,'high-beta': 0,'low-gamma': 0, 'high-gamma': 0}
+        self.waves_order = ['delta', 'theta','low-alpha', 'high-alpha', 'low-beta', 'high-beta','low-gamma', 'high-gamma']
+
+
         self.status = None
 
         # Create event handler lists
@@ -219,12 +253,15 @@ class Headset(object):
         self.meditation_handlers = []
         self.blink_handlers = []
         self.raw_value_handlers = []
+        self.waves_handlers = []
         self.headset_connected_handlers = []
         self.headset_notfound_handlers = []
         self.headset_disconnected_handlers = []
         self.request_denied_handlers = []
         self.scanning_handlers = []
         self.standby_handlers = []
+
+
 
         # Open the socket
         if open_serial:
